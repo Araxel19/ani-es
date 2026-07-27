@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.3.1"
+VERSION="1.4.0"
 
 CONTINUE=0
 progress="00:00:00"
@@ -26,6 +26,126 @@ BG_WHITE='\033[47m'
 
 NC='\033[0m'
 
+HISTORY_DIR="$HOME/ani-es"
+OLD_DB="$HISTORY_DIR/history.db"
+HISTORY_FILE="$HOME/ani-es/history.json"
+
+
+init_history() {
+
+    mkdir -p "$HISTORY_DIR"
+
+    [[ -f "$HISTORY_FILE" ]] || echo "{}" > "$HISTORY_FILE"
+
+    if [[ -f "$OLD_DB" ]]; then
+
+        echo
+        echo "El sistema de guardado de historial ha cambiado."
+        read -rp "¿Desea importar su antiguo historial? (y/n): " respuesta
+
+        if [[ "$respuesta" =~ ^[YySs]$ ]]; then
+
+            echo "Importando historial..."
+
+            if python3 <<EOF
+import sqlite3
+import json
+
+db_path = "$OLD_DB"
+json_path = "$HISTORY_FILE"
+
+try:
+    with open(json_path, "r", encoding="utf-8") as f:
+        history = json.load(f)
+except:
+    history = {}
+
+conn = sqlite3.connect(db_path)
+cursor = conn.cursor()
+
+cursor.execute("""
+SELECT name
+FROM sqlite_master
+WHERE type='table' AND name='animes'
+""")
+
+if cursor.fetchone():
+
+    cursor.execute("SELECT anime,last_cap,progress FROM animes")
+
+    for anime,last_cap,progress in cursor.fetchall():
+
+        try:
+            last_cap = int(last_cap)
+        except (TypeError, ValueError):
+            last_cap = 0
+
+        if not progress:
+            progress = "00:00:00"
+
+        history[anime] = {
+            "last_cap": last_cap,
+            "progress": progress
+        }
+
+conn.close()
+
+with open(json_path, "w", encoding="utf-8") as f:
+    json.dump(history, f, indent=4, ensure_ascii=False)
+
+EOF
+            then
+                rm -f "$OLD_DB"
+                echo "Historial importado correctamente."
+            else
+                echo "Ha ocurrido un error durante la importación."
+                echo "La base de datos antigua no se ha eliminado."
+            fi
+
+        else
+            rm -f "$OLD_DB"
+            echo "El historial antiguo ha sido eliminado."
+        fi
+    fi
+}
+
+init_history
+
+clear
+get_last_cap() {
+    jq -r --arg anime "$1" \
+        '.[$anime].last_cap // ""' \
+        "$HISTORY_FILE"
+}
+
+
+get_progress() {
+    jq -r --arg anime "$1" \
+        '.[$anime].progress // "00:00:00"' \
+        "$HISTORY_FILE"
+}
+
+
+save_history() {
+    local anime="$1"
+    local cap="$2"
+    local progress="$3"
+
+    tmp=$(mktemp)
+
+    jq \
+        --arg anime "$anime" \
+        --arg cap "$cap" \
+        --arg progress "$progress" \
+        '.[$anime] = {
+            last_cap: ($cap|tonumber),
+            progress: $progress
+        }' \
+        "$HISTORY_FILE" > "$tmp"
+
+    mv "$tmp" "$HISTORY_FILE"
+}
+ 
 
 show_help() {
     echo ""
@@ -426,38 +546,9 @@ fi
 
 clear
 echo -e "Anime: $GREEN $titulo_elegido $WHITE"
-  last_cap=$(python3 - <<END
-import sqlite3
-import os
 
-def conection():
-    home_dir = os.path.expanduser("~")
-    db_path = os.path.join(home_dir, "ani-es", "history.db")
-    return sqlite3.connect(db_path)
+last_cap=$(get_last_cap "$titulo_elegido")
 
-anime = '$titulo_elegido'
-
-conect = conection()
-cursor = conect.cursor()
-
-cursor.execute('''SELECT count(name) FROM sqlite_master WHERE type='table' AND name='animes' ''')
-if cursor.fetchone()[0] == 0:
-    cursor.execute('''
-        CREATE TABLE animes (
-            id INTEGER PRIMARY KEY,
-            anime TEXT,
-            last_cap TEXT,
-            progress TEXT
-        )
-    ''')
-conect.commit()
-
-cursor.execute('SELECT * FROM animes WHERE anime = ?', (anime,))
-row = cursor.fetchone()
-if row:
-    print(row[2])
-END
-)
 
 if [ -d "$url_without_https" ]; then
     tipo=$(grep -oP '<span>Tipo:</span> \K[^<]+' $url_without_https/index.html | tail -n 1)
@@ -486,25 +577,7 @@ fi
 
 if [ "$CONTINUE" == 1 ]; then
   capi=$last_cap
-  progress=$(python3 - <<END
-import sqlite3
-import os
-
-def conection():
-    home_dir = os.path.expanduser("~")
-    db_path = os.path.join(home_dir, "ani-es", "history.db")
-    return sqlite3.connect(db_path)
-
-conect = conection()
-cursor = conect.cursor()
-
-cursor.execute(f'SELECT progress from animes WHERE anime="$titulo_elegido"')
-
-response=cursor.fetchone()
-
-print(response[0])
-END
-)
+  progress=$(get_progress "$titulo_elegido")
 
 else
   capi=$(seq 1 "$num_episodios" | fzf \
@@ -613,113 +686,14 @@ case "$ENV" in
         ;;
 esac
 
-python3 - <<END
-import sqlite3
-import os
-
-def conection():
-    home_dir = os.path.expanduser("~")
-    db_path = os.path.join(home_dir, "ani-es", "history.db")
-    return sqlite3.connect(db_path)
-
-anime = '$titulo_elegido'
-capi = '$capi'
-
-progress = "$pos"
-
-
-conect = conection()
-cursor = conect.cursor()
-
-# Crear tabla si no existe
-cursor.execute('''SELECT count(name) FROM sqlite_master WHERE type='table' AND name='animes' ''')
-if cursor.fetchone()[0] == 0:
-    cursor.execute('''
-        CREATE TABLE animes (
-            id INTEGER PRIMARY KEY,
-            anime TEXT,
-            last_cap TEXT,
-            progress TEXT
-        )
-    ''')
-    conect.commit()
-
-
-cursor.execute("PRAGMA table_info(animes)")
-columns = [col[1] for col in cursor.fetchall()]
-
-if "progress" not in columns:
-    cursor.execute("ALTER TABLE animes ADD COLUMN progress TEXT DEFAULT 0")
-    conect.commit()
-
-# Insert / Update
-cursor.execute('SELECT * FROM animes WHERE anime = ?', (anime,))
-row = cursor.fetchone()
-
-if row is None:
-    cursor.execute(
-        'INSERT INTO animes (anime, last_cap, progress) VALUES (?, ?, ?)',
-        (anime, capi, progress)
-    )
-else:
-    if int(row[2]) < int(capi):
-        cursor.execute(
-            "UPDATE animes SET last_cap = ?, progress = ? WHERE anime = ?",
-            (capi, progress, anime)
-        )
-    else:
-        cursor.execute(
-            "UPDATE animes SET progress = ? WHERE anime = ?",
-            (progress, anime)
-        )
-
-conect.commit()
-END
+save_history "$titulo_elegido" "$capi" "$pos"
 
 op=$( (echo "Siguiente"; echo "Retroceder"; echo "Atras") | tac | fzf --prompt="Selecciona una opción: " --height=7 --border --info=inline --margin=1,1,0,0)
 
 if [[ "$op" == "Siguiente" ]]; then
     progress="00:00:00"
   capi=$((capi + 1))
-python3 - <<END
-import sqlite3
-import os
-
-def conection():
-    home_dir = os.path.expanduser("~")
-    db_path = os.path.join(home_dir, "ani-es", "history.db")
-    return sqlite3.connect(db_path)
-
-anime = '$titulo_elegido'
-capi = '$capi'
-
-conect = conection()
-cursor = conect.cursor()
-
-cursor.execute('''SELECT count(name) FROM sqlite_master WHERE type='table' AND name='animes' ''')
-if cursor.fetchone()[0] == 0:
-    cursor.execute('''
-        CREATE TABLE animes (
-            id INTEGER PRIMARY KEY,
-            anime TEXT,
-            last_cap TEXT,
-            progress TEXT
-        )
-    ''')
-conect.commit()
-cursor.execute('SELECT * FROM animes WHERE anime = ?', (anime,))
-row = cursor.fetchone()
-if row is None:
-  cursor.execute('INSERT INTO animes (anime, last_cap) VALUES (?, ?)', (anime, capi,))
-  conect.commit()
-else:
-  cursor.execute('SELECT *FROM animes WHERE anime = ?', [anime,])
-  row = cursor.fetchone()
-  if int(row[2])<int(capi):
-    cursor.execute("UPDATE animes SET last_cap = ? WHERE anime = ?", (capi, anime))
-    conect.commit()
-conect.commit()
-END
+    save_history "$titulo_elegido" "$capi" "$pos"
   videocap "$nuevaurl/$capi"
 elif [[ "$op" == "Retroceder" ]]; then
   progress="00:00:00"
