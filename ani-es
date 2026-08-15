@@ -1,6 +1,6 @@
 #!/bin/bash
 
-VERSION="1.4.0"
+VERSION="1.4.1"
 
 CONTINUE=0
 progress="00:00:00"
@@ -236,7 +236,7 @@ if [ "$update" != "$(cat "$ARCHIVO")" ]; then
     echo -n -e "${CYAN}Hay una actualizacion disponible se recomienda actualizar para garantizar que el script funcine correctamente (y/n) ${NC}"
     read ele
     if [ "$ele" == "y" ];then
-    diff -u "$ARCHIVO" <(echo "$update") | sudo patch "$ARCHIVO" > /dev/null 2>&1- && echo -e "${CYAN}El script ha sido actualizado${NC}" || echo -e "${RED}Ha ocurrido un error mientras se actualizaba el script${NC}"
+    diff -u "$ARCHIVO" <(echo "$update") | sudo patch "$ARCHIVO" > /dev/null 2>&1 && echo -e "${CYAN}El script ha sido actualizado${NC}" || echo -e "${RED}Ha ocurrido un error mientras se actualizaba el script${NC}"
     exit 0
     fi
 else
